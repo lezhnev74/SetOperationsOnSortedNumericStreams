@@ -19,6 +19,7 @@ Features:
 - generics to support any ordered number type
 - asc/desc orders supported
 - streaming support is added to reduce memory usage for potentially big data sources
+- early stop to consume as few items for streams as possible
 
 ## Sample
 
