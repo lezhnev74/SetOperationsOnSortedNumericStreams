@@ -16,6 +16,14 @@ type SortedNumbersStream[T constraints.Ordered] interface {
 // otherwise left or right is present reflecting left or right set of the operation (A op B)
 type operation[T constraints.Ordered] func(a, b *T)
 
+// An operation can know that no further results will be found
+// at which case it should stop reading from streams
+// shouldStop checks both streams if any is closed and may decide to stop all processing as pointless
+// example: (A AND B) should stop once either stream is drained
+// returns TRUE if no further processing is allowed
+// Note that stopped processing does not drain streams and separate cleanup required
+type shouldStop func(aClosed, bClosed bool) bool
+
 // ChannelStream is used as a result of operation on other streams
 type ChannelStream[T constraints.Ordered] struct {
 	pipe chan T
@@ -79,9 +87,10 @@ func Union[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], asc b
 			return
 		}
 	}
+	shouldStopDecision := func(aClosed, bClosed bool) bool { return false }
 
 	go func() {
-		iterate(stream1, stream2, unionOperation, asc)
+		iterate(stream1, stream2, unionOperation, shouldStopDecision, asc)
 		result.Close()
 	}()
 
@@ -97,9 +106,10 @@ func Intersect[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], a
 			result.Push(*a)
 		}
 	}
+	shouldStopDecision := func(aClosed, bClosed bool) bool { return aClosed || bClosed }
 
 	go func() {
-		iterate(stream1, stream2, unionOperation, asc)
+		iterate(stream1, stream2, unionOperation, shouldStopDecision, asc)
 		result.Close()
 	}()
 
@@ -114,16 +124,17 @@ func Diff[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], asc bo
 			result.Push(*a)
 		}
 	}
+	shouldStopDecision := func(aClosed, bClosed bool) bool { return aClosed }
 
 	go func() {
-		iterate(stream1, stream2, unionOperation, asc)
+		iterate(stream1, stream2, unionOperation, shouldStopDecision, asc)
 		result.Close()
 	}()
 
 	return result
 }
 
-func iterate[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], op operation[T], asc bool) {
+func iterate[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], op operation[T], stop shouldStop, asc bool) {
 	var (
 		i1, i2         T
 		empty1, empty2 bool
@@ -135,6 +146,9 @@ func iterate[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], op 
 		if empty1 {
 			i1, readOk = stream1.Next()
 			if !readOk {
+				if stop(true, false) {
+					return
+				}
 				for { // no more in stream1 -> return all from stream2
 					if !empty2 {
 						op(nil, &i2)
@@ -152,6 +166,9 @@ func iterate[T constraints.Ordered](stream1, stream2 SortedNumbersStream[T], op 
 		if empty2 {
 			i2, readOk = stream2.Next()
 			if !readOk {
+				if stop(false, true) {
+					return
+				}
 				for { // no more from stream2 -> return all from stream1
 					if !empty1 {
 						op(&i1, nil)
